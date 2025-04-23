@@ -20,7 +20,7 @@
 Для интеграции этого WebSocket клиента в Ваш проект на Swift, вы можете либо клонировать репозиторий, либо вручную добавить исходные файлы.
 
 ```bash
-git clone https://github.com/typefoxes/ExtWSClientSwift.git
+git clone https://github.com/extws-team/client-swift.git
 ```
 
 ### Swift Package Manager
