@@ -27,5 +27,3 @@ public protocol URLSessionProtocol {
 
 /// Расширение добавляет соответствие стандартного класса URLSessionWebSocketTask кастомному протоколу WebSocketTaskProtocol для абстракции от системных реализаций
 extension URLSessionWebSocketTask: WebSocketTaskProtocol {}
-
-
