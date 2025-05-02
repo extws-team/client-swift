@@ -8,25 +8,22 @@
 import Foundation
 
 /// Протокол для абстракции сессии WebSocket
-/// Определяет интерфейс для создания задач WebSocket, позволяя внедрять кастомные реализации
-/// и моки для тестирования. Соответствует интерфейсу `URLSession` из Foundation.
+/// Определяет интерфейс для создания задач WebSocket, позволяя внедрять кастомные реализации и моки для тестирования. Соответствует интерфейсу `URLSession` из Foundation.
 public protocol URLSessionProtocol {
 
-    /// Создает и возвращает задачу WebSocket для указанного URL
-    /// - Parameter url: URL сервера WebSocket. Должен использовать схемы:
-    ///   - `ws` для незащищенных соединений
-    ///   - `wss` для TLS-соединений
-    /// - Returns: Готовый к использованию объект WebSocket задачи
-    /// - Important: Возвращенная задача находится в приостановленном состоянии.
-    ///   Для старта соединения необходимо вызвать `resume()`.
-    /// - Note: Реализации должны гарантировать:
-    ///   - Корректную обработку URL согласно RFC 6455
-    ///   - Потокобезопасность при создании задач
-    /// ## Пример использования:
-    /// ```swift
-    /// let session: URLSessionProtocol = URLSession.shared
-    /// let task = session.webSocketTask(with: URL(string: "wss://echo.websocket.org")!)
-    /// task.resume()
-    /// ```
-    func webSocketTask(with url: URL) -> WebSocketTaskProtocol
+    /// Создает задачу WebSocket
+    /// - Parameter request: URLRequest для подключения WebSocket
+    /// - Returns: Объект, реализующий WebSocketTaskProtocol
+    func webSocketTask(with request: URLRequest) -> WebSocketTaskProtocol
+
+    /// Выполняет стандартный HTTP-запрос
+    /// - Parameter request: URLRequest для выполнения
+    /// - Returns: Кортеж с данными ответа и объектом URLResponse
+    /// - Throws: Ошибки сети или обработки запроса
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
+
+// MARK: - Расширение для соответствия URLSessionWebSocketTask протоколу WebSocketTaskProtocol
+
+/// Расширение добавляет соответствие стандартного класса URLSessionWebSocketTask кастомному протоколу WebSocketTaskProtocol для абстракции от системных реализаций
+extension URLSessionWebSocketTask: WebSocketTaskProtocol {}

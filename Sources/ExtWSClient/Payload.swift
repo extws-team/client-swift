@@ -22,36 +22,37 @@ public enum PayloadType: String, Codable {
 public protocol PayloadData: Codable {}
 
 /// Универсальная структура полезной нагрузки
-struct Payload<T: PayloadData>: Codable {
+public struct Payload<T: PayloadData>: Codable {
     let type: PayloadType
     let event: String?
     let data: T?
 }
-
-protocol PayloadSerializerProtocol {
+ 
+public protocol PayloadSerializerProtocol {
     func build<T: PayloadData>(type: PayloadType, event: String?, data: T?) throws -> Data
     func parse<T: PayloadData>(_ data: Data) throws -> Payload<T>
 }
 
 /// Класс для сериализации и десериализации Payload.
 /// Отвечает за упаковку и распаковку сообщений в формате JSON.
-final class PayloadSerializer: PayloadSerializerProtocol {
+public final class PayloadSerializer: PayloadSerializerProtocol {
+
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init() {
+   public init() {
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
     }
 
     /// Кодирует данные в формате Payload и возвращает JSON-Data.
-    func build<T: PayloadData>(type: PayloadType, event: String?, data: T?) throws -> Data {
+   public func build<T: PayloadData>(type: PayloadType, event: String?, data: T?) throws -> Data {
         let payload = Payload(type: type, event: event, data: data)
         return try encoder.encode(payload)
     }
 
     /// Декодирует JSON-Data в структуру Payload с заданным типом данных.
-    func parse<T: PayloadData>(_ data: Data) throws -> Payload<T> {
+   public func parse<T: PayloadData>(_ data: Data) throws -> Payload<T> {
         return try decoder.decode(Payload<T>.self, from: data)
     }
 }

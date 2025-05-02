@@ -11,15 +11,27 @@ import Foundation
 /// Позволяет подписываться на события по строковому ключу и вызывать их при необходимости.
 final class EventEmitter {
 
+    // MARK: - Constants
+
+    private enum Constants {
+        static let queueLabel = "com.eventemitter.queue"
+    }
+
+    // MARK: - Typealias
+
     typealias EventCallback = (Data) -> Void
 
-    private let queue = DispatchQueue(label: "com.eventemitter.queue", attributes: .concurrent)
+    // MARK: - Private properties
+
+    private let queue = DispatchQueue(label: Constants.queueLabel, attributes: .concurrent)
     private var _listeners: [String: [EventCallback]] = [:]
 
     private(set) var listeners: [String: [EventCallback]] {
         get { queue.sync { _listeners } }
         set { queue.async(flags: .barrier) { self._listeners = newValue } }
     }
+
+    // MARK: - Public methods
 
     /// Добавляет слушателя на определенное событие.
     func on(_ event: String, callback: @escaping EventCallback) {
