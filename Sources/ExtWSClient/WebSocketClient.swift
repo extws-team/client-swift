@@ -271,4 +271,3 @@ public final class WebSocketClient {
         return delegate.getResponse(for: urlSessionTask)
     }
 }
- 
