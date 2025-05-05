@@ -9,12 +9,10 @@ import Foundation
 
 /// Потокобезопасный актор для управления состоянием WebSocket соединения
 actor WebSocketState {
-    /// Флаг текущего состояния подключения
-    var isConnected = false
-    /// Очередь сообщений для отправки
-    var sendQueue: [Data] = []
-    /// Количество попыток переподключения
-    var reconnectAttempts: Int = .zero
+
+    var isConnected = false               // Флаг текущего состояния подключения
+    var sendQueue: [Data] = []            // Очередь сообщений для отправки
+    var reconnectAttempts: Int = .zero    // Количество попыток переподключения
 
     /// Обновляет состояние подключения
     /// - Parameter connected: Новое состояние подключения
@@ -44,5 +42,9 @@ actor WebSocketState {
     /// Сбрасывает счетчик попыток переподключения
     func resetReconnectAttempts() {
         reconnectAttempts = .zero
+    }
+
+    func enqueue(data: Data) {
+        sendQueue.append(data)
     }
 }

@@ -1,10 +1,11 @@
 
+
 # WebSocket клиент для Swift
 
 [![Swift](https://img.shields.io/badge/Swift-5.5+-orange.svg)](https://swift.org)
 [![iOS](https://img.shields.io/badge/iOS-13.0+-blue.svg)](https://developer.apple.com/ios/)
 
-**WebSocketClient** — Swift-клиент для работы с WebSocket, поддерживающий автоматическое переподключение, очереди сообщений и расширяемую архитектуру.
+Swift-клиент для работы с WebSocket, поддерживающий автоматическое переподключение, сериализацию данных и обработку событий.
 
 ## Возможности
 
@@ -20,7 +21,7 @@
 Для интеграции этого WebSocket клиента в Ваш проект на Swift, вы можете либо клонировать репозиторий, либо вручную добавить исходные файлы.
 
 ```bash
-git clone https://github.com/typefoxes/ExtWSClientSwift.git
+git clone https://github.com/extws-team/client-swift.git
 ```
 
 ### Swift Package Manager
@@ -29,80 +30,136 @@ git clone https://github.com/typefoxes/ExtWSClientSwift.git
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/extws-team/client-swift.git", from: "1.0.0")
+    .package(url: "https://github.com/extws-team/client-swift.git", from: "1.1.0")
 ]
+```
+
+## Быстрый старт
+
+### Инициализация клиента
+
+```swift
+let url = URL(string: "wss://your-websocket-server.com")!
+let client = WebSocketClient(url: url)
+```
+
+## Подключение и отключение
+
+```swift
+// Установка соединения
+Task {
+    await client.connect()
+}
+
+// Разрыв соединения
+Task {
+    await client.disconnect()
+}
 ```
 
 ## Использование
 
-### Инициализация
+### Отправка сообщений
 
 ```swift
-let url = URL(string: "wss://example.com/socket")!
-let client = WebSocketClient(url: url)
-client.connect()
-```
-
-### Базовый сценарий
-
-```swift
-// Подключение
-await client.connect()
-
-// Отправка сообщения
-struct ChatMessage: PayloadData {
+struct Message: PayloadData {
     let text: String
-    let author: String
 }
 
+// Отправка кастомного события
+client.send(
+    type: .event,
+    event: "user_message",
+    data: Message(text: "Hello World!")
+)
+```
+
+### Подписка на события
+
+```swift
+// Обработка входящих сообщений
+client.on("message") { data in
+    let payload = try? client.payloadSerializer.parse(data) as Payload<Message>
+    print("Received: \(payload?.data?.text ?? "")")
+}
+
+// Событие подключения
+client.on("connect") { _ in
+    print("Connected to server")
+}
+
+// Событие отключения
+client.on("disconnect") { _ in
+    print("Disconnected from server")
+}
+```
+
+## Дополнительные настройки
+
+### Модификация запроса перед подключением
+
+```swift
+client.beforeConnect = { request in
+    var modifiedRequest = request
+    modifiedRequest.setValue("Bearer token", forHTTPHeaderField: "Authorization")
+    return modifiedRequest
+}
+```
+
+### Обработка HTTP-ответов
+
+```swift
+client.onHTTPResponse = { response in
+    print("HTTP Status Code: \(response.statusCode)")
+}
+```
+
+## Автоматическое переподключение
+
+Клиент автоматически переподключается с экспоненциальной задержкой:
+
+- Начальная задержка: 2 секунды
+- Максимальная задержка: 30 секунд
+
+```swift
+// Отключить автоматическое переподключение (если нужно)
+client.reconnect = false
+```
+
+## Сериализация данных
+
+Используйте структуры, реализующие PayloadData:
+
+```swift
+struct CustomData: PayloadData {
+    let id: Int
+    let timestamp: Date
+}
+
+// Сериализация и отправка
 client.send(
     type: .message,
-    event: "chat",
-    data: ChatMessage(text: "Hello!", author: "iOS")
+    data: CustomData(id: 42, timestamp: Date())
 )
-
-// Подписка на события
-client.on("message") { data in
-    let message = try! JSONDecoder().decode(ChatMessage.self, from: data)
-    print("New message: \(message.text)")
-}
-
-// Отключение
-await client.disconnect()
-```
-## Расширенные настройки
-
-### Кастомизация переподключения
-
-```swift
-client.reconnectDelay = { attempts in
-    min(pow(2, Double(attempts)), 60) // Макс. задержка 60 сек
-}
 ```
 
-### Использование кастомной сессии
+## Обработка ошибок
 
 ```swift
-class CustomSession: URLSessionProtocol {
-    func webSocketTask(with url: URL) -> WebSocketTaskProtocol {
-        // Ваша реализация
+// Глобальный обработчик ошибок
+client.onConnectionStatusChanged = { isConnected in
+    if !isConnected {
+        print("Connection lost. Reconnecting...")
     }
 }
 
-let client = WebSocketClient(
-    url: url,
-    session: CustomSession()
-)
+// Ошибки авторизации
+client.onUpgradeError = { response in
+    if response.statusCode == 401 {
+        print("Authentication required")
+    }
+}
 ```
-## Архитектура
 
-### Основные компоненты
-
-- **WebSocketClient**
-- **Основной класс для управления соединением.**
-- **WebSocketTaskProtocol**
-- **Абстракция над WebSocket-задачей.**
-- **PayloadSerializer**
-- **Сериализация/десериализация сообщений.**
-- **EventEmitter**
-- **Система подписки на события.**
+## Лицензия
+Проект доступен под лицензией MIT. Подробности см. в файле LICENSE.

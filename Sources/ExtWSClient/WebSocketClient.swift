@@ -13,172 +13,176 @@ public final class WebSocketClient {
     // MARK: - Constants
 
     private enum Constants {
-        /// Максимальная задержка переподключения в секундах
+        static let timeout: TimeInterval = 5
         static let maxReconnectDelay: TimeInterval = 30
-        /// Интервал отправки ping-сообщений
-        static let pingInterval: TimeInterval = 20
-        /// Базовое значение для экспоненциальной задержки
         static let initialReconnectDelayBase: Double = 2.0
-        /// Коэффициент перевода секунд в наносекунды
-        static let nanosecondsPerSecond: Double = 1_000_000_00
-
-        /// Событие подключения
-        static let connectEvent = "connect"
-        /// Событие отключения
-        static let disconnectEvent = "disconnect"
-        /// Событие получения сообщения
-        static let messageEvent = "message"
-
-        // Логи
-        enum Log {
-            static let connectionClosed = "[WebSocketClient] ❌ Send failed: no active connection"
-            static let alreadyConnected = "[WebSocketClient] Already connected, aborting"
-            static let pingFailed = "Ping failed: %@"
-            static let receiveFailed = "Receive failed: %@"
-            static let encodingError = "Encoding error: %@"
-            static let sendFaild = "Send failed: %@"
-        }
-    }
-
-    // MARK: - WebSocketError
-    /// Ошибки WebSocket клиента
-    enum WebSocketError: Error {
-        /// Соединение закрыто
-        case connectionClosed
-        /// Ошибка кодирования данных
-        case encodingFailed(Error)
-        /// Ошибка отправки данных
-        case sendFailed(Error)
-        /// Локализованное описание ошибки
-        var localizedDescription: String {
-            switch self {
-            case .connectionClosed:
-                return Constants.Log.connectionClosed
-            case .encodingFailed(let error):
-                return String(format: Constants.Log.encodingError, error.localizedDescription)
-            case .sendFailed(let error):
-                return String(format: Constants.Log.sendFaild, error.localizedDescription)
-            }
-        }
+        static let idleTimeout: TimeInterval = 60
+        static let maxConcurrentOperationCount: Int =  1
+        static let nanosecondsPerSecond: Double = 1_000_000_000
+        static let unauthorizedStatusCode = 401
+        static let webSocketRequestLog =
+                """
+                [WebSocketClient] 🛠️ WebSocket Request:
+                - URL: %@
+                - Headers: %@
+                """
     }
 
     // MARK: - Public properties
 
-    /// URL сервера WebSocket
-    public let url: URL
-    /// Флаг текущего состояния подключения
-    public var isConnected: Bool {
+    public let url: URL                        // URL сервера WebSocket
+    public var isConnected: Bool {             // Флаг текущего состояния подключения
         get async { await state.isConnected }
     }
 
+    // MARK: - Event Handlers
+
+    public var beforeConnect: ((URLRequest) -> URLRequest)?       // Обработчик модификации запроса перед подключением
+    public var onUpgradeError: ((HTTPURLResponse) -> Void)?       // Обработчик ошибок обновления соединения
+    public var onConnectionStatusChanged: ((Bool) -> Void)?       // Обработчик изменения статуса подключения
+    public var onHTTPResponse: ((HTTPURLResponse) -> Void)?       // Обработчик HTTP ответов
+
     // MARK: - Private properties
 
-    /// Состояние WebSocket соединения
-    private let state = WebSocketState()
-    /// Сессия для создания WebSocket задач
-    private let session: URLSessionProtocol
-    /// Сериализатор полезной нагрузки
-    private let payloadSerializer: PayloadSerializerProtocol = PayloadSerializer()
-    /// Эмиттер событий
-    private let eventEmitter = EventEmitter()
-    /// Текущая задача WebSocket
-    private var webSocketTask: WebSocketTaskProtocol?
-    /// Таймер для ping-сообщений
-    private var pingTimer: Timer?
-    /// Максимальная задержка переподключения
-    private let maxReconnectDelay: TimeInterval = Constants.maxReconnectDelay
+    private let payloadSerializer: PayloadSerializerProtocol = PayloadSerializer()  // Сериализатор полезной нагрузки
+    private let maxReconnectDelay: TimeInterval = Constants.maxReconnectDelay       // Максимальная задержка переподключения
+    private let state = WebSocketState()                                            // Состояние WebSocket соединения
+    private let eventEmitter = EventEmitter()                                       // Эмиттер событий
+    private var webSocketTask: WebSocketTaskProtocol?                               // Текущая задача WebSocket
+    private var pingTimer: Timer?                                                   // Таймер для ping-сообщений
+    private var pongTimer: Timer?                                                   // Таймер для pong-сообщений
+    private let delegate = WebSocketTaskDelegate()                                  // Делегат для обработки ответа
+    private let session: URLSessionProtocol                                         // Сессия
+    private var idleTimeout: TimeInterval = Constants.idleTimeout                   // Таймаут
+    private let logger: LoggerProtocol = Logger()                                   // Логгер
 
     // MARK: - Lifecycle
 
-    /// Инициализация WebSocket клиента
+    /// Инициализирует клиент с указанными параметрами
     /// - Parameters:
     ///   - url: URL сервера WebSocket
-    ///   - session: Сессия для создания соединения
-    public init(url: URL, session: URLSessionProtocol = URLSession.shared) {
+    ///   - session: Опциональная пользовательская сессия URLSession
+    public init(
+        url: URL,
+        session: URLSessionProtocol? = nil
+    ) {
         self.url = url
-        self.session = session
+
+        if let session = session {
+            self.session = session
+        } else {
+            let dispatchQueue = DispatchQueue(label: Ln.delegateQueueName)
+            let operationQueue = OperationQueue()
+            operationQueue.underlyingQueue = dispatchQueue
+            operationQueue.maxConcurrentOperationCount = Constants.maxConcurrentOperationCount
+
+            self.session = SessionWrapper(
+                configuration: .default,
+                delegate: delegate,
+                delegateQueue: operationQueue
+            )
+        }
     }
 
     deinit {
         disconnectSync()
     }
 
-    // MARK: - Public methods
+    // MARK: - Connection Management
 
-    /// Устанавливает соединение с сервером WebSocket
+    /// Устанавливает соединение с WebSocket сервером
     public func connect() async {
         guard !(await state.isConnected) else {
-            print(Constants.Log.alreadyConnected)
             return
         }
 
         await MainActor.run {
-            webSocketTask = session.webSocketTask(with: url)
+            var request = URLRequest(url: url)
+
+            if let beforeConnect = beforeConnect {
+                request = beforeConnect(request)
+            }
+
+            logger.log(
+                String(
+                    format: Constants.webSocketRequestLog,
+                    request.url?.absoluteString ?? Ln.emptyString,
+                    request.allHTTPHeaderFields ?? [:]),
+                error: false)
+
+            webSocketTask = session.webSocketTask(with: request)
             webSocketTask?.resume()
-            startPing()
             listen()
         }
 
         await state.updateConnectionStatus(true)
-        eventEmitter.emit(Constants.connectEvent, data: Data())
-        await flushQueue()
+        onConnectionStatusChanged?(true)
+        eventEmitter.emit(Ln.connectEvent, data: Data())
+
+        Task {
+            await flushQueue()
+        }
     }
 
-    /// Разрывает соединение с сервером WebSocket
+    /// Разрывает текущее соединение с сервером
     public func disconnect() async {
         await MainActor.run {
             pingTimer?.invalidate()
+            pongTimer?.invalidate()
             webSocketTask?.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
         }
+
         await state.updateConnectionStatus(false)
-        eventEmitter.emit(Constants.disconnectEvent, data: Data())
+        eventEmitter.emit(Ln.disconnectEvent, data: Data())
     }
 
-    /// Отправляет структурированное сообщение
+    // MARK: - Message Handling
+
+    /// Отправляет сообщение через WebSocket
     /// - Parameters:
-    ///   - type: Тип сообщения
-    ///   - event: Название события
-    ///   - data: Данные для отправки
+    ///   - type: Тип полезной нагрузки
+    ///   - event: Название события (опционально)
+    ///   - data: Данные для отправки (опционально)
     public func send<T: PayloadData>(type: PayloadType, event: String? = nil, data: T?) {
         Task {
             do {
                 let message = try payloadSerializer.build(type: type, event: event, data: data)
-                try await sendInternal(data: message)
+
+                if await state.isConnected, webSocketTask != nil {
+                    try await sendInternal(data: message)
+                } else {
+                    logger.log("[WebSocketClient send] Queuing message because not connected", error: true)
+                    await state.enqueue(data: message)
+                }
+
             } catch {
-                throw WebSocketError.encodingFailed(error)
+                logger.log("[WebSocketClient send] Failed to build message: \(error)", error: true)
             }
         }
     }
 
-    /// Подписывается на получение событий WebSocket
+    /// Регистрирует обработчик для указанного события
     /// - Parameters:
     ///   - event: Название события
-    ///   - callback: Обработчик события
+    ///   - callback: Коллбэк для обработки данных события
     public func on(_ event: String, callback: @escaping (Data) -> Void) {
         eventEmitter.on(event, callback: callback)
     }
 
     // MARK: - Private methods
 
-    /// Синхронное отключение от сервера
-    private func disconnectSync() {
-        pingTimer?.invalidate()
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        webSocketTask = nil
-    }
-
-    /// Внутренняя реализация отправки данных
-    /// - Parameter data: Данные для отправки
+    /// Внутренний метод для отправки данных
     private func sendInternal(data: Data) async throws {
         guard let task = webSocketTask else {
-            print(Constants.Log.connectionClosed)
+            logger.log("[WebSocketClient sendInternal] webSocketTask is nil", error: true)
             throw WebSocketError.connectionClosed
         }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             task.send(.data(data)) { [weak self] error in
                 if let error = error {
+                    self?.logger.log("[WebSocketClient sendInternal] Send failed: \(error)", error: true)
                     self?.reconnect()
                     continuation.resume(throwing: WebSocketError.sendFailed(error))
                 } else {
@@ -188,26 +192,74 @@ public final class WebSocketClient {
         }
     }
 
-    /// Запускает периодическую отправку ping-сообщений
-    private func startPing() {
+    /// Синхронно разрывает соединение
+    private func disconnectSync() {
         pingTimer?.invalidate()
-        pingTimer = Timer.scheduledTimer(
-            withTimeInterval: Constants.pingInterval,
-            repeats: true
-        ) { [weak self] _ in
-            self?.sendPing()
-        }
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        onConnectionStatusChanged?(false)
     }
 
     /// Отправляет ping-сообщение
     private func sendPing() {
         webSocketTask?.sendPing { [weak self] error in
             if let error = error {
-                let wsError = WebSocketError.encodingFailed(error)
-                print(wsError.localizedDescription)
+                self?.logger.log("[WebSocketClient sendPing] error: \(error)", error: true)
                 self?.reconnect()
+            } else {
             }
         }
+    }
+
+    /// Отправляет pong-сообщение
+    private func sendPong() {
+        do {
+            let pongData = try payloadSerializer.build(
+                type: .pong,
+                event: nil,
+                data: EmptyPayload?.none
+            )
+
+            webSocketTask?.send(
+                .data(pongData),
+                completionHandler: { [weak self] error in
+                    if let error = error {
+                        self?.logger.log("[WebSocketClient sendPong] error: \(error)", error: true)
+                        self?.reconnect()
+                    }
+                }
+            )
+        } catch {
+            logger.log("Failed to create pong: \(error)", error: true)
+        }
+    }
+
+    /// Запускает таймер для отправки ping-сообщений
+    private func startPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(
+            withTimeInterval: idleTimeout - Constants.timeout,
+            repeats: true) { [weak self] _ in
+            self?.sendPing()
+            self?.startPongTimer()
+        }
+    }
+
+    /// Запускает таймер ожидания pong-ответа
+    private func startPongTimer() {
+        pongTimer?.invalidate()
+        pongTimer = Timer.scheduledTimer(
+            withTimeInterval: Constants.timeout,
+            repeats: false
+        ) { [weak self] _ in
+            self?.reconnect()
+        }
+    }
+
+    /// Отменяет таймер ожидания pong-ответа
+    private func cancelPongTimer() {
+        pongTimer?.invalidate()
+        pongTimer = nil
     }
 
     /// Начинает прослушивание входящих сообщений
@@ -215,28 +267,67 @@ public final class WebSocketClient {
         webSocketTask?.receive { [weak self] result in
             guard let self = self else { return }
 
+            if let task = self.webSocketTask,
+               let httpResponse = self.getHTTPResponse(for: task) {
+                self.onHTTPResponse?(httpResponse)
+            }
             switch result {
             case .success(.data(let data)):
                 self.handleMessage(data)
                 self.listen()
+            case .success(.string(let text)):
+                if let data = text.data(using: .utf8) {
+                    self.handleMessage(data)
+                }
+                self.listen()
             case .success:
                 self.listen()
-            case .failure(let error):
-                let wsError = WebSocketError.encodingFailed(error)
-                print(wsError.localizedDescription)
-                self.reconnect()
+            case .failure:
+                if let task = self.webSocketTask,
+                   let httpResponse = self.getHTTPResponse(for: task),
+                   httpResponse.statusCode == Constants.unauthorizedStatusCode {
+                    self.onUpgradeError?(httpResponse)
+                } else {
+                    self.reconnect()
+                }
             }
         }
     }
 
-    /// Обрабатывает полученное сообщение
-    /// - Parameter data: Полученные данные
+    /// Обрабатывает входящее сообщение
     private func handleMessage(_ data: Data) {
-        eventEmitter.emit(Constants.messageEvent, data: data)
+        cancelPongTimer()
+
+        do {
+            let (type, _, payloadData) = try payloadSerializer.parseHeader(from: data)
+
+            switch type {
+                case .ping:
+                    sendPong()
+                case .timeout:
+                    let initData = try payloadSerializer.decode(InitData.self, from: payloadData)
+                handleTimeoutMessage(initData)
+                case .message:
+                    eventEmitter.emit(Ln.messageEvent, data: data)
+                case .pong:
+                    sendPing()
+                case .error:
+                    logger.log("[WebSocketClient handleMessage type: Error]", error: true)
+            }
+        } catch {
+            logger.log("[WebSocketClient handleMessage] Error parsing message: \(error)", error: true)
+        }
     }
 
-    /// Выполняет процедуру переподключения
+    /// Обрабатывает данные timeout
+    private func handleTimeoutMessage(_ data: InitData) {
+        self.idleTimeout = TimeInterval(data.idle_timeout)
+        startPingTimer()
+    }
+
+    /// Выполняет переподключение с экспоненциальной задержкой
     private func reconnect() {
+        logger.log("[WebSocketClient reconnect] Initiating reconnect", error: false)
         Task {
             await disconnect()
             let attempts = await state.reconnectAttempts
@@ -250,6 +341,28 @@ public final class WebSocketClient {
     /// Отправляет все сообщения из очереди
     private func flushQueue() async {
         let queue = await state.flushQueue()
-        for data in queue { try? await sendInternal(data: data) }
+        logger.log("[WebSocketClient flushQueue] Queue count = \(queue.count)", error: false)
+
+        for data in queue {
+            logger.log("[WebSocketClient flushQueue] Sending message...", error: false)
+            try? await sendInternal(data: data)
+        }
+    }
+
+    // MARK: - Response Handling
+
+    /// Возвращает HTTP ответ для задачи WebSocket
+    private func getHTTPResponse(for task: WebSocketTaskProtocol) -> HTTPURLResponse? {
+        guard let urlSessionTask = task as? URLSessionWebSocketTask else { return nil }
+
+        if let saved = delegate.getResponse(for: urlSessionTask) {
+            return saved
+        }
+
+        if let direct = urlSessionTask.response as? HTTPURLResponse {
+            return direct
+        }
+
+        return nil
     }
 }
